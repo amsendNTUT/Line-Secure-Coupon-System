@@ -1,0 +1,115 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>我的專屬票券夾</title>
+    <!-- 引入 LINE LIFF SDK 與 QRCode 產生器 -->
+    <script charset="utf-8" src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+    <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #f4f6f8; margin: 0; padding: 20px; display: flex; justify-content: center; }
+        .card { background: white; border-radius: 16px; padding: 24px; width: 100%; max-width: 380px; box-shadow: 0 4px 20px rgba(0,0,0,0.08); text-align: center; }
+        .badge { display: inline-block; background: #e8f8ee; color: #06C755; font-weight: bold; padding: 4px 12px; border-radius: 20px; font-size: 13px; margin-bottom: 12px; }
+        h2 { margin: 0 0 8px; color: #222; }
+        .user-info { font-size: 14px; color: #666; margin-bottom: 20px; }
+        #qrcode { display: flex; justify-content: center; margin: 20px auto; padding: 16px; background: #fff; border: 2px dashed #06C755; border-radius: 12px; width: fit-content; }
+        .status { font-weight: bold; padding: 10px; border-radius: 8px; margin-top: 12px; font-size: 15px; }
+        .status.issued { background: #e8f8ee; color: #06C755; }
+        .status.redeemed { background: #fee2e2; color: #dc2626; }
+        .status.loading { background: #f3f4f6; color: #555; }
+        .code-text { font-family: monospace; font-size: 12px; color: #888; margin-top: 8px; word-break: break-all; }
+    </style>
+</head>
+<body>
+    <div class="card">
+        <div class="badge">LINE 官方認證票券</div>
+        <h2>🎟️ 限量 50 元折價券</h2>
+        <div class="user-info" id="userInfo">正在驗證 LINE 身分...</div>
+
+        <div id="qrcode"></div>
+        <div class="status loading" id="statusBox">系統連線中，請稍候...</div>
+        <div class="code-text" id="codeText"></div>
+    </div>
+
+    <script>
+        const CAMPAIGN_ID = 'LINE_COUP_50%OFF';
+
+        async function initApp() {
+            const statusBox = document.getElementById('statusBox');
+            const userInfo = document.getElementById('userInfo');
+
+            try {
+                // 1. 向後端取得 LIFF_ID
+                const cfgRes = await fetch('/api/config');
+                const { liffId } = await cfgRes.json();
+                if (!liffId) throw new Error('後端尚未設定 LIFF_ID');
+
+                // 2. 初始化 LIFF
+                await liff.init({ liffId });
+                if (!liff.isLoggedIn()) {
+                    liff.login();
+                    return;
+                }
+
+                // 3. 取得真實 LINE 使用者資料
+                const profile = await liff.getProfile();
+                const userId = profile.userId;
+                userInfo.textContent = `持有人：${profile.displayName}`;
+
+                // 4. 先檢查是否已領過券，沒有的話自動呼叫領券 API
+                let coupon = null;
+                const myRes = await fetch(`/api/coupons/my?userId=${encodeURIComponent(userId)}&campaignId=${encodeURIComponent(CAMPAIGN_ID)}`);
+                if (myRes.ok) {
+                    const data = await myRes.json();
+                    coupon = data.coupon;
+                } else {
+                    const claimRes = await fetch('/api/coupons/claim', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ userId, campaignId: CAMPAIGN_ID })
+                    });
+                    const claimData = await claimRes.json();
+                    if (!claimRes.ok) throw new Error(claimData.error || '領券失敗');
+                    coupon = claimData.coupon;
+                }
+
+                // 5. 渲染防偽動態 QR Code 與狀態
+                renderCoupon(coupon);
+            } catch (err) {
+                statusBox.className = 'status redeemed';
+                statusBox.textContent = `❌ ${err.message}`;
+            }
+        }
+
+        function renderCoupon(coupon) {
+            const qrContainer = document.getElementById('qrcode');
+            const statusBox = document.getElementById('statusBox');
+            const codeText = document.getElementById('codeText');
+
+            qrContainer.innerHTML = '';
+            const payload = JSON.stringify({
+                couponCode: coupon.couponCode,
+                nonce: coupon.nonce
+            });
+
+            new QRCode(qrContainer, {
+                text: payload,
+                width: 200,
+                height: 200
+            });
+
+            if (coupon.status === 'ISSUED') {
+                statusBox.className = 'status issued';
+                statusBox.textContent = '✅ 狀態：可使用（請出示給店員掃碼）';
+            } else {
+                statusBox.className = 'status redeemed';
+                statusBox.textContent = '⚠️ 狀態：此票券已核銷使用';
+            }
+            codeText.textContent = `券號：${coupon.couponCode.slice(0, 12)}...`;
+        }
+
+        initApp();
+    </script>
+</body>
+</html>
